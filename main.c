@@ -4,18 +4,19 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdint.h>
 
 int token;  // current token
 char* src, *old_src;  // pointer to source code string;
 int poolsize;  // default size of text/data/stack
 int line;  // line number
 
-int* text,  // text segment
+int64_t* text,  // text segment
     * old_text, // for dump text segment
     * stack;  // stack
 char* data;  // data segment
 
-int* pc, *bp, *sp, ax, cycle;  // virtual machine registers
+int64_t* pc, *bp, *sp, ax, cycle;  // virtual machine registers
 
 // instructions
 enum {
@@ -114,8 +115,8 @@ struct identifier {
     int Bvalue;
 };
 
-int token_val;  // value of current token (mainly for number)
-int* current_id,  // current parsed ID
+int64_t token_val;  // value of current token (mainly for number)
+int64_t* current_id,  // current parsed ID
     * symbols;  // symbol table
 
 // 我们不支持struct，故用下面的编码方式来表示struct
@@ -135,7 +136,7 @@ enum {
 
 // types of variables/function
 enum { CHAR, INT, PTR };
-int* idmain;  // the `main` function
+int64_t* idmain;  // the `main` function
 /*
 program ::= {global_declaration}+
 
@@ -174,7 +175,7 @@ int expr_type;  // the type of an expression
 // 4: old bp ponter <- index_of_bp
 // 5: local var 1
 // 6: local var 2
-int index_of_bp;  // index of bp ponter on stack
+int index_of_bp;  // index of bp pointer on stack
 
 void next()
 {
@@ -331,7 +332,7 @@ void next()
             src++;
             // if it is a single character, return Num token
             if (token == '"') {
-                token_val = (int)last_pos;
+                token_val = (int64_t)last_pos;
             } else {
                 token = Num;
             }
@@ -391,7 +392,7 @@ void next()
                 current_id = current_id + IdSize;
             }
             // store new ID
-            current_id[Name] = (int)last_pos;
+            current_id[Name] = (int64_t)last_pos;
             current_id[Hash] = hash;
             token = current_id[Token] = Id;
             return;
@@ -417,9 +418,9 @@ void match(int tk)
 
 void expression(int level)
 {
-    int *id;
+    int64_t *id;
     int tmp;
-    int *addr;
+    int64_t *addr;
     {
         if (!token) {
             printf("%d: unexpected token EOF of expression\n", line);
@@ -432,12 +433,14 @@ void expression(int level)
             // emit code
             *++text = IMM;
             *++text = token_val;
+            printf("code: IMM %ld\n", *text);
             expr_type = INT;
         } else if (token == '"') {
             // continuous string "abc" "abc"
             // emit code
             *++text = IMM;
             *++text = token_val;
+            printf("code: IMM %ld\n", *text);
 
             match('"');
             // store the rest strings
@@ -446,7 +449,7 @@ void expression(int level)
             }
             // append the end of string character '\0', all the data are the default
             // to 0, so just move data one position forward.
-            data = (char*)(((int)data + sizeof(int)) & (-sizeof(int)));
+            data = (char*)(((intptr_t)data + sizeof(intptr_t)) & (-sizeof(intptr_t)));
             expr_type = PTR;
         } else if (token == Sizeof) {
             // sizeof is actually an unary operator
@@ -471,6 +474,7 @@ void expression(int level)
             // emit code
             *++text = IMM;
             *++text = (expr_type == CHAR) ? sizeof(char) : sizeof(int);
+            printf("code: IMM %ld\n", *text);
 
             expr_type = INT;
         } else if (token == Id) {
@@ -513,21 +517,25 @@ void expression(int level)
                 if (tmp > 0) {
                     *++text = ADJ;
                     *++text = tmp;
+                    printf("code: ADJ %ld\n", *text);
                 }
                 expr_type = id[Type];
             } else if (id[Class] == Num) {
                 // enum variable
                 *++text = IMM;
                 *++text = id[Value];
+                printf("code: IMM %ld\n", *text);
                 expr_type = INT;
             } else {
                 // variable
                 if (id[Class] == Loc) {
                     *++text = LEA;
                     *++text = index_of_bp - id[Value];
+                    printf("code: LEA %ld\n", *text);
                 } else if (id[Class] == Glo) {
                     *++text = IMM;
                     *++text = id[Value];
+                    printf("code: IMM %ld\n", *text);
                 } else {
                     printf("%d: undefined variable\n", line);
                     exit(-1);
@@ -536,6 +544,7 @@ void expression(int level)
                 // address which is stored in `ax`
                 expr_type = id[Type];
                 *++text = (expr_type == Char) ? LC : LI;
+                printf("code: LC\n");
             }
         } else if (token == '(') {
             // cast or paranthesis
@@ -568,6 +577,7 @@ void expression(int level)
                 exit(-1);
             }
             *++text = (expr_type == CHAR) ? LC : LI;
+            printf("code: %s\n", *text == LC ? "LC" : "LI");
         } else if (token == And) {
             // get the address of
             match(And);
@@ -677,12 +687,12 @@ void expression(int level)
                     printf("%d: missing colon in conditional\n", line);
                     exit(-1);
                 }
-                *addr = (int)(text + 3);
+                *addr = (intptr_t)(text + 3);
                 *++text = JMP;
                 addr = ++text;
 
                 expression(Cond);
-                *addr = (int)(text + 1);
+                *addr = (intptr_t)(text + 1);
             } else if (token == Lor) {
                 // logic or
                 match(Lor);
@@ -691,7 +701,7 @@ void expression(int level)
                 addr = ++text;
 
                 expression(Lan);
-                *addr = (int)(text + 1);
+                *addr = (intptr_t)(text + 1);
                 expr_type = INT;
             } else if (token == Lan) {
                 // logic and
@@ -702,7 +712,7 @@ void expression(int level)
 
                 expression(Or);
 
-                *addr = (int)(text + 1);
+                *addr = (intptr_t)(text + 1);
                 expr_type = INT;
             } else if (token == Or) {
                 // bitwise or
@@ -801,10 +811,10 @@ void expression(int level)
 
                 expr_type = tmp;
                 if (expr_type > PTR) {
-                    // pointer tpye, and not `char*`
+                    // pointer type, and not `char*`
                     *++text = PUSH;
                     *++text = IMM;
-                    *++text = sizeof(int);
+                    *++text = sizeof(int64_t);
                     *++text = MUL;
                 }
                 *++text = ADD;
@@ -819,14 +829,14 @@ void expression(int level)
                     *++text = SUB;
                     *++text = PUSH;
                     *++text = IMM;
-                    *++text = sizeof(int);
+                    *++text = sizeof(int64_t);
                     *++text = DIV;
                     expr_type = INT;
                 } else if (tmp > PTR) {
                     // pointer movement
                     *++text = PUSH;
                     *++text = IMM;
-                    *++text = sizeof(int);
+                    *++text = sizeof(int64_t);
                     *++text = MUL;
                     *++text = SUB;
                     expr_type = tmp;
@@ -894,7 +904,7 @@ void expression(int level)
                     // pointer, `not char *`
                     *++text = PUSH;
                     *++text = IMM;
-                    *++text = sizeof(int);
+                    *++text = sizeof(int64_t);
                     *++text = MUL;
                 }
                 else if (tmp < PTR) {
@@ -922,7 +932,7 @@ void statement()
     // 5. <empty statement>;
     // 6. expression; (expression end with semicolon)
 
-    int *a, *b;  // bless for branch control
+    int64_t *a, *b;  // bless for branch control
 
     if (token == If) {
         // if (...) <statement> [else <statement]
@@ -953,14 +963,14 @@ void statement()
             // +1 => JMP
             // +1 => label b address
             // +1 => first op instr in 'else' statement
-            *b = (int)(text + 3);
+            *b = (int64_t)(text + 3);
             // emit code for JMP b
             *++text = JMP;
             b = ++text;  // pointing to label b
 
             statement();
         }
-        *b = (int)(text + 1);  // now, we know label b
+        *b = (int64_t)(text + 1);  // now, we know label b
     }
     else if (token == While) {
         // a:                   a:
@@ -983,8 +993,8 @@ void statement()
         statement();
 
         *++text = JMP;
-        *++text = (int)a;
-        *b = (int)(text + 1);
+        *++text = (int64_t)a;
+        *b = (int64_t)(text + 1);
     } else if (token == '{') {
         // { <statement> ... }
         match('{');
@@ -1246,13 +1256,13 @@ void global_declaration()
         // 碰到'('，就是函数声明或者定义
         if (token == '(') {
             current_id[Class] = Fun;
-            current_id[Value] = (int)(text + 1);  // the memory address
+            current_id[Value] = (int64_t)(text + 1);  // the memory address
             function_declaration();
         } else {  // 否则就是变量声明或者定义
             // variable declaration
             current_id[Class] = Glo;  // global variable
-            current_id[Value] = (int)data;  // assign memory address
-            data = data + sizeof(int);
+            current_id[Value] = (int64_t)data;  // assign memory address
+            data = data + sizeof(int64_t);
         }
 
         if (token == ',') {
@@ -1272,78 +1282,199 @@ void program()
 
 int eval()
 {
-    int op, *tmp;
+    int64_t op;
+    int64_t* tmp;
     while (1) {
+        op = *pc++; // get next operation code
+        switch (op) {
         // IMM (<-- pc)
-        if (op == IMM) { ax = *pc++; }
+        case IMM: {
+            ax = *pc++;
+            break;
+        }
         // LC (loc <-- ax)
-        else if (op == LC) { ax = *(char*)ax; }
+        case LC: {
+            ax = *(char*)ax;
+            break;
+        }
         // LI (loc <-- ax)
-        else if (op == LI) { ax = *(int*)ax; }
+        case LI:  {
+            ax = *(int64_t*)ax;
+            break;
+        }
         // SC (loc <-- sp)
-        else if (op == SC) { *(char*)*sp++ = ax; }
+        case SC: {
+            *(char*)*sp++ = ax;
+            break;
+        }
         // SI (loc <-- sp)
-        else if (op == SI) { *(int*)*sp++ = ax; }
+        case SI: {
+            *(int64_t*)*sp++ = ax;
+            break;
+        }
         // PUSH
-        else if (op == PUSH) { *--sp = ax; }
+        case PUSH: {
+            *--sp = ax;
+            break;
+        }
         // JMP <addr> (<-- pc)
-        else if (op == JMP) { pc = (int*)*pc; }
+        case JMP: {
+            pc = (int64_t*)*pc;
+            break;
+        }
         // JZ <addr> (<-- pc)
-        else if (op == JZ) { pc = ax ? (pc + 1) : (int*)*pc; }
-        // JNZ <addr> (<-- pc)
-        else if (op == JNZ) { pc = ax ? (int*)*pc : (pc + 1); }
-        // CALL <addr> (<-- pc)
-        else if (op == CALL) { *--sp = (int)(pc + 1); pc = (int*)*pc; }
-        // ENT <num of int> (<-- pc)
-        else if (op == ENT) { *--sp = (int)bp; bp = sp; sp = sp - *pc++; }
-        // ADJ <num of int> (<-- pc)
-        else if (op == ADJ) { sp = sp + *pc++; }
-        // LEV
-        else if (op == LEV) { sp = bp; bp = (int*)*sp++; pc = (int*)*sp++; }
-        // LEA <n-th argument> in callee
-        // arg: 1  ===> new_bp + 4
-        // arg: 2  ===> new_bp + 3
-        // arg: 3  ===> new_bp + 2
-        // return address => new_bp + 1
-        // old_bp ===> new_bp
-        // local var 1 ===> new_bp - 1
-        // local var 2 ===> new_bp - 2
-        else if (op == LEA) { ax = (int)(bp + *pc++); }
-        // arithmetic operations
-        // ax := (sp OP ax), sp++
-        else if (op == OR) { ax = *sp++ | ax; }
-        else if (op == XOR) { ax = *sp++ ^ ax; }
-        else if (op == AND) { ax = *sp++ & ax; }
-        else if (op == EQ) { ax = *sp++ == ax; }
-        else if (op == NE) { ax = *sp++ != ax; }
-        else if (op == LT) { ax = *sp++ < ax; }
-        else if (op == LE) { ax = *sp++ <= ax; }
-        else if (op == GT) { ax = *sp++ > ax; }
-        else if (op == GE) { ax = *sp++ >= ax; }
-        else if (op == SHL) { ax = *sp++ << ax; }
-        else if (op == SHR) { ax = *sp++ >> ax; }
-        else if (op == ADD) { ax = *sp++ + ax; }
-        else if (op == SUB) { ax = *sp++ - ax; }
-        else if (op == MUL) { ax = *sp++ * ax; }
-        else if (op == DIV) { ax = *sp++ / ax; }
-        else if (op == MOD) { ax = *sp++ % ax; }
+        case JZ: {
+            pc = ax ? (pc + 1) : (int64_t*)*pc;
+            break;
+        }
+            // JNZ <addr> (<-- pc)
+        case JNZ: {
+            pc = ax ? (int64_t*)*pc : (pc + 1);
+            break;
+        }
+            // CALL <addr> (<-- pc)
+        case CALL: {
+            *--sp = (int64_t)(pc + 1);
+            pc = (int64_t*)*pc;
+            break;
+        }
+            // ENT <num of int> (<-- pc)
+        case ENT: {
+            *--sp = (int64_t)bp;
+            bp = sp;
+            sp = sp - *pc++;
+            break;
+        }
+            // ADJ <num of int> (<-- pc)
+        case ADJ: {
+            sp = sp + *pc++;
+            break;
+        }
+            // LEV
+        case LEV: {
+            sp = bp;
+            bp = (int64_t*)*sp++;
+            pc = (int64_t*)*sp++;
+            break;
+        }
+            // LEA <n-th argument> in callee
+            // arg: 1  ===> new_bp + 4
+            // arg: 2  ===> new_bp + 3
+            // arg: 3  ===> new_bp + 2
+            // return address => new_bp + 1
+            // old_bp ===> new_bp
+            // local var 1 ===> new_bp - 1
+            // local var 2 ===> new_bp - 2
+        case LEA: {
+            ax = (int64_t)(bp + *pc++);
+            break;
+        }
+            // arithmetic operations
+            // ax := (sp OP ax), sp++
+        case OR: {
+            ax = *sp++ | ax;
+            break;
+        }
+        case XOR: {
+            ax = *sp++ ^ ax;
+            break;
+        }
+        case AND: {
+            ax = *sp++ & ax;
+            break;
+        }
+        case EQ: {
+            ax = *sp++ == ax;
+            break;
+        }
+        case NE: {
+            ax = *sp++ != ax;
+            break;
+        }
+        case LT: {
+            ax = *sp++ < ax;
+            break;
+        }
+        case LE: {
+            ax = *sp++ <= ax;
+            break;
+        }
+        case GT: {
+            ax = *sp++ > ax;
+            break;
+        }
+        case GE: {
+            ax = *sp++ >= ax;
+            break;
+        }
+        case SHL: {
+            ax = *sp++ << ax;
+            break;
+        }
+        case SHR: {
+            ax = *sp++ >> ax;
+            break;
+        }
+        case ADD: {
+            ax = *sp++ + ax;
+            break;
+        }
+        case SUB: {
+            ax = *sp++ - ax;
+            break;
+        }
+        case MUL: {
+            ax = *sp++ * ax;
+            break;
+        }
+        case DIV: {
+            ax = *sp++ / ax;
+            break;
+        }
+        case MOD: {
+            ax = *sp++ % ax;
+            break;
+        }
 
-        // helper operations
-        else if (op == EXIT) { printf("exit(%d)", *sp); return *sp; }
-        else if (op == OPEN) { ax = open((char*)sp[1], sp[0]); }
-        else if (op == CLOS) { ax = close(*sp); }
-        else if (op == READ) { ax = read(sp[2], (char*)sp[1], *sp); }
-        else if (op == PRTF) {
+            // helper operations
+        case EXIT: {
+            printf("exit(%ld)", *sp);
+            return *sp;
+        }
+        case OPEN: {
+            ax = open((char*)sp[1], sp[0]);
+            break;
+        }
+        case CLOS: {
+            ax = close(*sp);
+            break;
+        }
+        case READ: {
+            ax = read(sp[2], (char*)sp[1], *sp);
+            break;
+        }
+        case PRTF: {
             tmp = sp + pc[1];
             ax = printf((char*)tmp[-1], tmp[-2], tmp[-3], tmp[-4], tmp[-5], tmp[-6]);
+            break;
         }
-        else if (op == MALC) { ax = (int)malloc(*sp); }
-        else if (op == MSET) { ax = (int)memset((char*)sp[2], sp[1], *sp); }
-        else if (op == MCMP) { ax = memcmp((char*)sp[2], (char*)sp[1], *sp); }
-        else {
+        case MALC: {
+            ax = (int64_t)malloc(*sp);
+            break;
+        }
+        case MSET: {
+            ax = (int64_t)memset((char*)sp[2], sp[1], *sp);
+            break;
+        }
+        case MCMP: {
+            ax = memcmp((char*)sp[2], (char*)sp[1], *sp);
+            break;
+        }
+        default: {
             printf("unknown instruction: %d\n", op);
             return -1;
         }
+        } // end of switch/case
     }
     return 0;
 }
@@ -1351,6 +1482,8 @@ int eval()
 int main(int argc, char** argv)
 {
     int i, fd;
+    int64_t* tmp;
+
     argc--;
     argv++;
 
@@ -1381,7 +1514,7 @@ int main(int argc, char** argv)
     memset(symbols, 0, poolsize);
 
     // point to stack base/bottom
-    bp = sp = (int*)((char*)stack + poolsize);
+    bp = sp = (int64_t*)((char*)stack + poolsize);
     ax = 0;
 
     src = "char else enum if int return sizeof while "
@@ -1422,5 +1555,31 @@ int main(int argc, char** argv)
 
     program();
 
+    // 设置程序启动运行的函数是main函数
+    // 之后手动调用main，放入2个参数到栈中，设置返回IP跳转地址
+    if (!(pc = (int64_t*)idmain[Value])) {
+        printf("main() not defined\n");
+        return -1;
+    }
+    // setup stack
+    sp = (int64_t*)((int64_t)stack + poolsize);
+    *--sp = EXIT;  // call exit if main returns
+    *--sp = PUSH;
+    tmp = sp;
+    // push main函数的第一个参数
+    *--sp = argc;
+    // push main函数的第二个参数
+    *--sp = (int64_t)argv;
+    // push main函数返回后的跳转地址IP
+    // 这个跳转地址就是之前的stack的位置，那里面存有PUSH op
+    //  EXIT
+    //  PUSH  <----- 跳转到这里
+    // 注意这里是一个栈
+    // PUSH指令将ax寄存器内容放入到--sp中
+    //   EXIT
+    //   PUSH  <------ IP执行这里
+    //   (ax)  <----- return from 用户代码中的main，sp指向这里
+    // 然后IP执行EXIT指令，将*sp返回，也就是(ax)
+    *--sp = (int64_t)tmp;
     return eval();
 }
