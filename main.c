@@ -414,9 +414,111 @@ void match(int tk)
     next();
 }
 
+void expression(int level)
+{
+    // do nothing
+}
+
 void statement()
 {
-    // todo
+    // there are 6 kinds of statements here:
+    // 1. if (...) <statement> [else <statement>]
+    // 2. while (...) <statement>
+    // 3. { <statement> }
+    // 4. return xxx;
+    // 5. <empty statement>;
+    // 6. expression; (expression end with semicolon)
+
+    int *a, *b;  // bless for branch control
+
+    if (token == If) {
+        // if (...) <statement> [else <statement]
+        //
+        // if (...)       <cond>
+        //                JZ a
+        //  <statement>   <statement>
+        // else:          JMP b
+        // a:             a:
+        //  <statement>   <statement>
+        // b:             b:
+        //
+
+        match(If);
+        match('(');
+        expression(Assign); // parse condition
+        match(')');
+
+        // emit code for if
+        *++text = JZ;
+        b = ++text;  // 跳转到对应else分支的指令地址的text位置，待会要填充
+        // pointing to label a
+
+        statement();
+        if (token == Else) {
+            match(Else);
+
+            // +1 => JMP
+            // +1 => label b address
+            // +1 => first op instr in 'else' statement
+            *b = (int)(text + 3);
+            // emit code for JMP b
+            *++text = JMP;
+            b = ++text;  // pointing to label b
+
+            statement();
+        }
+        *b = (int)(text + 1);  // now, we know label b
+    }
+    else if (token == While) {
+        // a:                   a:
+        //  while (<cond>)      <cond>
+        //                      JZ b
+        //    <statement>       <statement>
+        //                      JMP a
+        // b:                   b:
+        match(While);
+
+        a = text + 1;
+
+        match('(');
+        expression(Assign);
+        match(')');
+
+        *++text = JZ;
+        b = ++text;
+
+        statement();
+
+        *++text = JMP;
+        *++text = (int)a;
+        *b = (int)(text + 1);
+    } else if (token == '{') {
+        // { <statement> ... }
+        match('{');
+
+        while (token != '}') {
+            statement();
+        }
+
+        match('}');
+    } else if (token == Return) {
+        // return [<expression>] ;
+        match(token);
+        if (token != ';') {
+            expression(Assign);
+        }
+        match(';');
+
+        // emit code for return
+        *++text = LEV;
+    } else if (token == ';') {
+        // empty statement
+        match(';');
+    } else {
+        // a = b; or function_call();
+        expression(Assign);
+        match(';');
+    }
 }
 
 void function_parameter()
@@ -665,11 +767,6 @@ void global_declaration()
         }
     }
     next();
-}
-
-void expression(int level)
-{
-    // do nothing
 }
 
 void program()
